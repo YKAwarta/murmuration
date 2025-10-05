@@ -10,8 +10,8 @@ export const metadata: Metadata = {
   description:
     "Birds Beyond the Horizon - AI-powered exoplanet classification using NASA Kepler/TESS data",
   icons: {
-    icon: "/murmuration_logo.png",
-    apple: "/murmuration_logo.png",
+    icon: "/favicon.ico",
+    apple: "/favicon.ico",
   },
 };
 

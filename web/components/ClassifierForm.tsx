@@ -111,6 +111,7 @@ export function ClassifierForm({
             className="rounded-xl border border-slate-700 bg-slate-800/60 px-4 py-2 text-sm hover:bg-slate-800"
           >
             Use Sample
+            <span className="text-xs text-slate-400">• Scout</span>
           </button>
           <button
             type="button"

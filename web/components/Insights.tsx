@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type MetricsFull } from "@/lib/api";
 import {
@@ -11,122 +11,137 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Tooltip,
+  Tooltip as RechartsTooltip,
   ResponsiveContainer,
   Legend,
   Cell,
 } from "recharts";
-import { formatPercent } from "@/lib/utils";
 
 type Props = { metrics: MetricsFull | null; loading?: boolean };
 
 export default function Insights({ metrics, loading = false }: Props) {
   if (loading) {
-    return <Card><CardHeader><CardTitle>Flight Data</CardTitle></CardHeader><CardContent>Loading…</CardContent></Card>;
+    return (
+      <Card>
+        <CardHeader><CardTitle>Insights (Flight Deck)</CardTitle></CardHeader>
+        <CardContent>Loading…</CardContent>
+      </Card>
+    );
   }
   if (!metrics) {
-    return <Card><CardHeader><CardTitle>Flight Data</CardTitle></CardHeader><CardContent>No metrics available.</CardContent></Card>;
+    return (
+      <Card>
+        <CardHeader><CardTitle>Insights (Flight Deck)</CardTitle></CardHeader>
+        <CardContent>No metrics available.</CardContent>
+      </Card>
+    );
   }
 
-  // Try to derive class labels from metrics; fall back to common Kepler labels.
-  const classLabels = useMemo(() => {
-    const keys = Object.keys(metrics.auc_per_class ?? {});
-    return keys.length ? keys : ["CONFIRMED", "CANDIDATE", "FALSE POSITIVE"];
-  }, [metrics]);
+  // -------- helpers
+  const num = (v: unknown, mul = 1) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n * mul : null;
+  };
+  const pct = (v: unknown) => num(v, 100);
 
-  // Feature importance (prefer SHAP, else gain)
-  const importance = useMemo(() => {
-    const src = metrics.feature_importances_shap ?? metrics.feature_importances_gain ?? {};
-    return Object.entries(src)
-      .sort(([, a], [, b]) => (b as number) - (a as number))
-      .slice(0, 10)
-      .map(([feature, score]) => ({ feature, importance: (score as number) * 100 }));
-  }, [metrics]);
+  // -------- summary stats (safe)
+  const cvMacro = Number(metrics?.search?.cv_macro_f1_mean ?? 0);
+  const ece = Number(metrics?.ece ?? 0);
+  const recThr = Number(metrics?.recommended_threshold ?? 0.5);
 
-  // ROC series (each class is its own series)
-  const rocSeries = useMemo(() => {
-    return Object.entries(metrics.roc || {}).map(([label, data]) => ({
-      label,
-      points: (data.fpr ?? []).map((fpr, i) => ({
-        x: (fpr ?? 0) * 100,
-        y: (data.tpr?.[i] ?? 0) * 100,
-      })),
-      auc: (metrics.auc_per_class || {})[label],
-    }));
-  }, [metrics]);
+  // -------- importance (SHAP preferred, else gain)
+  const rawImp = metrics.feature_importances_shap ?? metrics.feature_importances_gain ?? {};
+  const importance = Object.entries(rawImp)
+    .map(([feature, score]) => ({ feature, importance: pct(score) }))
+    .filter((d) => d.importance !== null)
+    .sort((a, b) => (b.importance as number) - (a.importance as number))
+    .slice(0, 10) as { feature: string; importance: number }[];
 
-  // PR series
-  const prSeries = useMemo(() => {
-    return Object.entries(metrics.pr || {}).map(([label, data]) => ({
-      label,
-      points: (data.recall ?? []).map((rec, i) => ({
-        x: (rec ?? 0) * 100,
-        y: (data.precision?.[i] ?? 0) * 100,
-      })),
-      ap: data.ap,
-    }));
-  }, [metrics]);
+  // -------- ROC curves
+  const rocSeries = Object.entries(metrics.roc ?? {}).map(([label, curve]) => {
+    const points =
+      (curve?.fpr ?? []).map((f, i) => {
+        const x = pct(f);
+        const y = pct(curve?.tpr?.[i]);
+        return x !== null && y !== null ? { x, y } : null;
+      }).filter(Boolean) as { x: number; y: number }[];
+    return { label, points, auc: metrics.auc_per_class?.[label] };
+  });
 
-  // Calibration curve
-  const calibration = useMemo(() => {
-    const bins = metrics.calibration_bins;
-    if (!bins?.bin_mid?.length) return [];
-    return bins.bin_mid.map((m, i) => ({
-      expected: (m ?? 0) * 100,
-      actual: (bins.acc?.[i] ?? 0) * 100,
-      count: bins.count?.[i] ?? 0,
-    }));
-  }, [metrics]);
+  // -------- PR curves
+  const prSeries = Object.entries(metrics.pr ?? {}).map(([label, curve]) => {
+    const points =
+      (curve?.recall ?? []).map((r, i) => {
+        const x = pct(r);
+        const y = pct(curve?.precision?.[i]);
+        return x !== null && y !== null ? { x, y } : null;
+      }).filter(Boolean) as { x: number; y: number }[];
+    return { label, points, ap: curve?.ap };
+  });
 
-  // Confusion matrix (heat table)
-  const cm = metrics.confusion_matrix || [];
+  // -------- Calibration
+  const calBins = metrics.calibration_bins;
+  const calibration =
+    calBins?.bin_mid?.map((m, i) => {
+      const expected = pct(m);
+      const actual = pct(calBins.acc?.[i]);
+      const count = Number(calBins.count?.[i] ?? 0);
+      return expected !== null && actual !== null ? { expected, actual, count } : null;
+    }).filter(Boolean) ?? [];
+
+  // -------- Confusion matrix
+  const cm = (metrics.confusion_matrix ?? []).map((row) =>
+    row.map((v) => Number(v) || 0)
+  );
   const cmMax = cm.flat().reduce((m, n) => Math.max(m, n), 0) || 1;
+  const classLabels = Object.keys(metrics.auc_per_class ?? {}).length
+    ? Object.keys(metrics.auc_per_class!)
+    : ["CONFIRMED", "CANDIDATE", "FALSE POSITIVE"];
 
-  const meanAuc = useMemo(() => {
-    const vals = Object.values(metrics.auc_per_class || {});
-    if (!vals.length) return 0;
-    const s = vals.reduce((a, b) => a + b, 0);
-    return s / vals.length;
-  }, [metrics]);
+  // -------- Mean AUC (safe)
+  const aucVals = Object.values(metrics.auc_per_class ?? {}).map((v) => Number(v) || 0);
+  const meanAuc = aucVals.length ? aucVals.reduce((a, b) => a + b, 0) / aucVals.length : 0;
 
   return (
     <div className="grid gap-6">
       {/* Summary */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="CV Macro F1" value={(metrics.search?.cv_macro_f1_mean ?? 0).toFixed(3)} />
-        <StatCard label="ECE" value={(metrics.ece ?? 0).toFixed(3)} />
-        <StatCard label="Optimal Threshold" value={(metrics.recommended_threshold ?? 0.5).toFixed(2)} />
+        <StatCard label="CV Macro F1" value={cvMacro.toFixed(3)} />
+        <StatCard label="ECE" value={ece.toFixed(3)} />
+        <StatCard label="Optimal Threshold" value={recThr.toFixed(2)} />
         <StatCard label="Mean AUC" value={meanAuc.toFixed(3)} />
       </div>
 
-      {/* Feature importance */}
-      <Card>
-        <CardHeader><CardTitle>Feature Importance (Top 10)</CardTitle></CardHeader>
-        <CardContent className="h-72">
-          <ResponsiveContainer>
-            <BarChart data={importance} layout="vertical" margin={{ left: 12, right: 12, top: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis type="number" unit="%" />
-              <YAxis dataKey="feature" type="category" width={140} />
-              <Tooltip />
-              <Bar dataKey="importance">
-                {importance.map((_, i) => <Cell key={i} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
+      {/* Feature Importance (show only if provided by API) */}
+{importance.length > 0 && (
+  <Card>
+    <CardHeader><CardTitle>Feature Importance (Top 10)</CardTitle></CardHeader>
+    <CardContent className="h-72">
+      <ResponsiveContainer>
+        <BarChart data={importance} layout="vertical" margin={{ left: 12, right: 12, top: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis type="number" unit="%" domain={[0, "dataMax"]} />
+          <YAxis dataKey="feature" type="category" width={140} />
+          <RechartsTooltip formatter={(v: unknown) => `${(Number(v) || 0).toFixed(1)}%`} />
+          <Bar dataKey="importance">
+            {importance.map((_, i) => <Cell key={i} />)}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </CardContent>
+  </Card>
+)}
 
-      {/* ROC curves */}
+      {/* ROC */}
       <Card>
         <CardHeader><CardTitle>ROC Curves</CardTitle></CardHeader>
         <CardContent className="h-72">
           <ResponsiveContainer>
             <LineChart margin={{ left: 12, right: 12, top: 8 }}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis type="number" dataKey="x" name="FPR" unit="%" />
+              <XAxis type="number" dataKey="x" name="FPR" unit="%" domain={[0, 100]} />
               <YAxis type="number" dataKey="y" name="TPR" unit="%" domain={[0, 100]} />
-              <Tooltip />
+              <RechartsTooltip />
               <Legend />
               {rocSeries.map((s) => (
                 <Line
@@ -134,8 +149,8 @@ export default function Insights({ metrics, loading = false }: Props) {
                   data={s.points}
                   type="monotone"
                   dataKey="y"
+                  name={`${s.label}${s.auc != null ? ` (AUC ${Number(s.auc).toFixed(3)})` : ""}`}
                   dot={false}
-                  name={`${s.label}${s.auc ? ` (AUC ${s.auc.toFixed(3)})` : ""}`}
                 />
               ))}
             </LineChart>
@@ -143,16 +158,16 @@ export default function Insights({ metrics, loading = false }: Props) {
         </CardContent>
       </Card>
 
-      {/* PR curves */}
+      {/* PR */}
       <Card>
-        <CardHeader><CardTitle>Precision-Recall Curves</CardTitle></CardHeader>
+        <CardHeader><CardTitle>Precision–Recall Curves</CardTitle></CardHeader>
         <CardContent className="h-72">
           <ResponsiveContainer>
             <LineChart margin={{ left: 12, right: 12, top: 8 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis type="number" dataKey="x" name="Recall" unit="%" domain={[0, 100]} />
               <YAxis type="number" dataKey="y" name="Precision" unit="%" domain={[0, 100]} />
-              <Tooltip />
+              <RechartsTooltip />
               <Legend />
               {prSeries.map((s) => (
                 <Line
@@ -160,8 +175,8 @@ export default function Insights({ metrics, loading = false }: Props) {
                   data={s.points}
                   type="monotone"
                   dataKey="y"
+                  name={`${s.label}${s.ap != null ? ` (AP ${Number(s.ap).toFixed(3)})` : ""}`}
                   dot={false}
-                  name={`${s.label}${s.ap != null ? ` (AP ${s.ap.toFixed(3)})` : ""}`}
                 />
               ))}
             </LineChart>
@@ -173,24 +188,25 @@ export default function Insights({ metrics, loading = false }: Props) {
       <Card>
         <CardHeader><CardTitle>Calibration</CardTitle></CardHeader>
         <CardContent className="h-64">
-          <ResponsiveContainer>
-            <LineChart data={calibration} margin={{ left: 12, right: 12, top: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="expected" unit="%" />
-              <YAxis unit="%" domain={[0, 100]} />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="expected" name="Expected" dot={false} />
-              <Line type="monotone" dataKey="actual" name="Actual" dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-          <div className="mt-2 text-xs text-slate-400">
-            Reliability diagram built from calibration bins (count-weighted).
-          </div>
+          {calibration.length === 0 ? (
+            <div className="text-sm text-slate-400">No calibration bins provided by the API.</div>
+          ) : (
+            <ResponsiveContainer>
+              <LineChart data={calibration} margin={{ left: 12, right: 12, top: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="expected" unit="%" domain={[0, 100]} />
+                <YAxis unit="%" domain={[0, 100]} />
+                <RechartsTooltip />
+                <Legend />
+                <Line type="monotone" dataKey="expected" name="Expected" dot={false} />
+                <Line type="monotone" dataKey="actual" name="Actual" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </CardContent>
       </Card>
 
-      {/* Confusion matrix */}
+      {/* Confusion Matrix */}
       <Card>
         <CardHeader><CardTitle>Confusion Matrix</CardTitle></CardHeader>
         <CardContent>
@@ -209,10 +225,13 @@ export default function Insights({ metrics, loading = false }: Props) {
                   <tr key={rIdx}>
                     <td className="p-2 text-xs text-slate-400">{classLabels[rIdx] ?? `C${rIdx}`}</td>
                     {row.map((val, cIdx) => {
-                      const alpha = cmMax ? Math.min(1, val / cmMax) : 0;
+                      const alpha = Math.min(1, val / cmMax);
                       return (
-                        <td key={cIdx} className="p-2 text-center text-sm"
-                            style={{ backgroundColor: `rgba(245, 158, 11, ${0.15 + 0.6 * alpha})` }}>
+                        <td
+                          key={cIdx}
+                          className="p-2 text-center text-sm"
+                          style={{ backgroundColor: `rgba(245, 158, 11, ${0.15 + 0.6 * alpha})` }}
+                        >
                           {val}
                         </td>
                       );

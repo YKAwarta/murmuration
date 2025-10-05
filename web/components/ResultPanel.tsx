@@ -7,6 +7,7 @@ import { toast } from "@/components/ui/toast";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { type PredictResponse } from "@/lib/api";
 import { formatPercent } from "@/lib/utils";
+import { Bird } from "lucide-react";
 
 interface ResultPanelProps {
   result: PredictResponse | null;
@@ -51,11 +52,18 @@ export function ResultPanel({ result, threshold, onThresholdChange }: ResultPane
     <Card>
       <CardHeader className="flex items-center justify-between">
         <CardTitle className="flex items-center gap-2">
-          Prediction Result
-          <Badge variant={isAccepted ? "accepted" : "uncertain"}>
-            {isAccepted ? `${result.label} - Accepted` : "Uncertain - Needs Review"}
-          </Badge>
-        </CardTitle>
+  Prediction Result
+  <Badge variant={isAccepted ? "accepted" : "uncertain"}>
+    {isAccepted ? (
+      <span className="inline-flex items-center gap-1">
+        <Bird className="h-3.5 w-3.5" />
+        Predicted: {result.label}
+      </span>
+    ) : (
+      "Uncertain — Needs Review"
+    )}
+  </Badge>
+</CardTitle>
         <button
           onClick={copyToClipboard}
           className="rounded-lg border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800"
@@ -66,19 +74,22 @@ export function ResultPanel({ result, threshold, onThresholdChange }: ResultPane
 
       <CardContent className="space-y-6">
         <div className="grid gap-4 sm:grid-cols-3">
-          <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
-            <div className="text-xs text-slate-400">Confidence</div>
-            <div className="text-xl font-semibold">{formatPercent(result.decision.confidence)}</div>
-          </div>
-          <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
-            <div className="text-xs text-slate-400">Margin vs {result.decision.second_best.label}</div>
-            <div className="text-xl font-semibold">{formatPercent(result.decision.margin)}</div>
-          </div>
-          <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
-            <div className="text-xs text-slate-400">Decision Threshold</div>
-            <div className="text-sm">{threshold.toFixed(2)}</div>
-          </div>
-        </div>
+  <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+    <div className="text-xs text-slate-400">Confidence</div>
+    <div className="text-xl font-semibold">{formatPercent(result.decision.confidence)}</div>
+    <div className="text-[11px] text-slate-500 mt-0.5">Flock confidence</div>
+  </div>
+  <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+    <div className="text-xs text-slate-400">Margin</div>
+    <div className="text-xl font-semibold">{formatPercent(result.decision.margin)}</div>
+    <div className="text-[11px] text-slate-500 mt-0.5">Lead over next class</div>
+  </div>
+  <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+    <div className="text-xs text-slate-400">Decision Threshold</div>
+    <div className="text-sm">{threshold.toFixed(2)}</div>
+    <div className="text-[11px] text-slate-500 mt-0.5">Gate to join the flock</div>
+  </div>
+</div>
 
         <div>
           <div className="mb-2 text-sm text-slate-300">Adjust Decision Threshold</div>
@@ -126,6 +137,7 @@ export function ResultPanel({ result, threshold, onThresholdChange }: ResultPane
 
         <div className="space-y-2">
           <div className="text-sm font-medium">Top Contributing Factors</div>
+          <div className="text-xs text-slate-500 -mt-1 mb-2">Why the flock turned</div>
           <div className="space-y-2">
             {factorData.map((f) => (
               <div key={f.feature}>

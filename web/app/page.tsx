@@ -27,6 +27,21 @@ export default function Home() {
   const [loadingMetrics, setLoadingMetrics] = useState(false);
 
   useEffect(() => {
+  // prefetch metrics once; harmless if the tab is never opened
+  if (!metricsFull && !loadingMetrics) {
+    setLoadingMetrics(true);
+    getMetricsFull()
+      .then(setMetricsFull)
+      .catch((err) => {
+        console.error("Failed to load metrics:", err);
+        toast({ message: "Failed to load metrics", type: "error" });
+      })
+      .finally(() => setLoadingMetrics(false));
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
+  useEffect(() => {
     getMetadata()
       .then((data) => {
         setMetadata(data);
@@ -102,13 +117,13 @@ export default function Home() {
 
       {/* Hero */}
       <section className="mb-8 flex flex-col items-center text-center">
-        <Image
+        <img
           src="/murmuration_logo.png"
           alt="Murmuration"
           width={84}
           height={84}
           className="mb-2"
-          priority
+          loading="eager"
         />
         <h1 className="text-3xl font-bold">Murmuration</h1>
         <p className="text-slate-400">Exoplanet Classifier</p>
@@ -119,9 +134,15 @@ export default function Home() {
 
       <Tabs defaultValue="predict" onValueChange={handleTabChange}>
         <TabsList>
-          <TabsTrigger value="predict">Predict</TabsTrigger>
-          <TabsTrigger value="insights">Insights</TabsTrigger>
-        </TabsList>
+  <TabsTrigger value="predict" className="flex flex-col leading-tight">
+    <span>Predict</span>
+    <span className="text-[10px] text-slate-400">Scout</span>
+  </TabsTrigger>
+  <TabsTrigger value="insights" className="flex flex-col leading-tight">
+    <span>Insights</span>
+    <span className="text-[10px] text-slate-400">Flight&nbsp;Deck</span>
+  </TabsTrigger>
+</TabsList>
 
         <TabsContent value="predict">
           <div className="grid gap-6 md:grid-cols-2">
@@ -143,9 +164,10 @@ export default function Home() {
           <MetricStrip metadata={metadata} />
         </TabsContent>
 
-        <TabsContent value="insights">
-          <Insights metrics={metricsFull} loading={loadingMetrics} />
-        </TabsContent>
+        <TabsContent value="insights" className="w-full">
+  <Insights metrics={metricsFull} loading={loadingMetrics} />
+</TabsContent>
+
       </Tabs>
     </main>
   );
