@@ -1,0 +1,3 @@
+period,duration,depth,impact,prad,insol,teq,steff,slogg,srad,smass,smet,star_mag,snr,ntrans,pred_label,top_p,margin,accepted
+10.5,,,,,,,,,,,,,,,FALSE POSITIVE,0.795424185454326,0.591495120119946,False
+10.5,4.2,500,,,,,,,,,,,,,FALSE POSITIVE,0.5379758260402612,0.07860030035062848,False
