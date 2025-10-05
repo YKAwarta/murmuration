@@ -3,6 +3,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any
 from api.schemas import PredictPayload
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 
 ART_DIR = os.getenv("ARTIFACTS_DIR", "artifacts")
 MODEL_PATH = os.path.join(ART_DIR, "model.pkl")
@@ -44,8 +46,18 @@ def metadata():
 def echo_sample():
     if not os.path.exists(SAMPLE_PATH):
         raise HTTPException(404, "sample_inputs.csv not found")
-    row = pd.read_csv(SAMPLE_PATH).iloc[0].to_dict()
-    return row
+    df = pd.read_csv(SAMPLE_PATH)
+    row = df.iloc[0]
+
+    # Only return model features, convert NaN -> None for JSON
+    features = {f: (None if pd.isna(row.get(f)) else float(row.get(f))) for f in FEATURES}
+    payload = {"features": features}
+
+    # include true label if present
+    if "true_label" in df.columns and not pd.isna(row["true_label"]):
+        payload["true_label"] = str(row["true_label"])
+
+    return JSONResponse(content=jsonable_encoder(payload))
 
 @app.post("/predict")
 def predict(payload: PredictPayload):
