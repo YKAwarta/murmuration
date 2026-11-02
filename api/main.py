@@ -1,10 +1,18 @@
-import os, json, joblib, numpy as np, pandas as pd
-from fastapi import FastAPI, HTTPException
+import json
+import logging
+import math
+import os
+from typing import Any, Dict, List
+
+import numpy as np
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
-from typing import Dict, Any, List
+
 from api.schemas import PredictPayload
+from src.model.predictor import METRICS_FILE, Predictor
+
+VERSION = "0.3.0"
 
 FEATURE_INFO = {
     "period":  {"unit": "days",  "hint": "Orbital period"},
@@ -25,154 +33,188 @@ FEATURE_INFO = {
 }
 
 ART_DIR = os.getenv("ARTIFACTS_DIR", "artifacts")
-MODEL_PATH = os.path.join(ART_DIR, "model.pkl")
-FEATURES_PATH = os.path.join(ART_DIR, "feature_list.json")
-METRICS_PATH = os.path.join(ART_DIR, "metrics.json")
 SAMPLE_PATH = os.path.join(ART_DIR, "sample_inputs.csv")
+# Set to a CSV path to append every /predict request and its result (off by default)
+INFER_LOG = os.getenv("MURMURATION_INFER_LOG")
 
-app = FastAPI(title="Starling API", version="0.2.0")
+log = logging.getLogger("murmuration")
+
+predictor = Predictor.load(ART_DIR)
+with open(os.path.join(ART_DIR, METRICS_FILE)) as f:
+    METRICS = json.load(f)
+FEATURES = predictor.features
+LABELS = predictor.labels
+DEFAULT_THRESHOLD = float(METRICS["decision"]["recommended_threshold"])
+SAMPLES = pd.read_csv(SAMPLE_PATH) if os.path.exists(SAMPLE_PATH) else None
+
+app = FastAPI(title="Murmuration API", version=VERSION)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
 )
 
-model = joblib.load(MODEL_PATH)
-FEATURES = json.load(open(FEATURES_PATH))
-METRICS = json.load(open(METRICS_PATH))
-LABELS = METRICS["labels"]
 
-# Optional SHAP explainer
-explainer = None
-try:
-    import shap
-    explainer = shap.TreeExplainer(model)
-except Exception:
-    explainer = None
-
-def to_vector(d: Dict[str, Any]) -> np.ndarray:
-    vals = []
+def clean_features(raw: Dict[str, Any]) -> Dict[str, float]:
+    """Validate one feature dict; missing, null or empty values become NaN (LightGBM handles them)."""
+    if not isinstance(raw, dict):
+        raise HTTPException(422, "features must be an object of {feature: number}")
+    unknown = sorted(set(raw) - set(FEATURES))
+    if unknown:
+        raise HTTPException(422, f"unknown features: {unknown}; expected a subset of {FEATURES}")
+    out = {}
     for f in FEATURES:
-        v = d.get(f, None)
-        vals.append(np.nan if v is None or v == "" else float(v))
-    return np.array(vals, dtype=float).reshape(1, -1)
+        v = raw.get(f)
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            out[f] = math.nan
+            continue
+        if isinstance(v, bool):
+            raise HTTPException(422, f"feature '{f}' must be a number, got a boolean")
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(422, f"feature '{f}' must be a number, got {v!r}")
+        if math.isinf(x):
+            raise HTTPException(422, f"feature '{f}' must be finite")
+        out[f] = x
+    return out
+
+
+def json_value(x: float):
+    return None if x is None or (isinstance(x, float) and math.isnan(x)) else float(x)
+
+
+def append_log(features: Dict[str, float], result: dict) -> None:
+    row = {**{f: json_value(features[f]) for f in FEATURES},
+           "pred_label": result["label"], "confidence": result["decision"]["confidence"],
+           "threshold": result["decision"]["threshold"], "accepted": result["decision"]["accepted"]}
+    try:
+        pd.DataFrame([row]).to_csv(INFER_LOG, mode="a", index=False, header=not os.path.exists(INFER_LOG))
+    except OSError as e:
+        log.warning("could not write inference log %s: %s", INFER_LOG, e)
+
+
+@app.get("/health")
+def health():
+    return {"ok": True, "version": VERSION}
+
 
 @app.get("/metadata")
 def metadata():
+    cal = METRICS["calibration"]
+    test = METRICS["test"]
     slim = {
-        "macro_f1": METRICS.get("macro_f1"),
-        "roc_auc_ovr": METRICS.get("roc_auc_ovr"),
-        "n_train": METRICS.get("n_train"),
-        "n_test": METRICS.get("n_test"),
-        "recommended_threshold": METRICS.get("recommended_threshold")
+        "accuracy": test["accuracy"],
+        "macro_f1": test["macro_f1"],
+        "roc_auc_ovr": test["roc_auc_ovr_macro"],
+        "n_train": METRICS["splits"]["train"],
+        "n_calibration": METRICS["splits"]["calibration"],
+        "n_test": METRICS["splits"]["test"],
+        "ece_uncalibrated": cal["test_before"]["ece_top_label"],
+        "ece_calibrated": cal["test_after"]["ece_top_label"],
+        "brier_uncalibrated": cal["test_before"]["brier"],
+        "brier_calibrated": cal["test_after"]["brier"],
+        "recommended_threshold": DEFAULT_THRESHOLD,
+        "target_precision": METRICS["decision"]["target_precision"],
     }
-    return {"features": FEATURES, "labels": LABELS, "metrics": slim, "version": "0.2.0"}
+    return {
+        "features": FEATURES,
+        "labels": LABELS,
+        "metrics": slim,
+        "calibration": {"method": cal["method"], "temperature": predictor.temperature},
+        "data": {"retrieved_utc": METRICS["data"].get("retrieved_utc"),
+                 "labeled_rows": METRICS["data"]["labeled_rows"]},
+        "version": VERSION,
+    }
+
 
 @app.get("/metrics_full")
 def metrics_full():
-    # Full metrics for charts (ROC/PR/calibration, confusion matrix, importances)
-    return JSONResponse(content=jsonable_encoder(METRICS))
+    # Full evaluation record for charts (calibration, ROC/PR, confusion matrix, importances)
+    return METRICS
+
+
+@app.get("/feature_info")
+def feature_info():
+    return FEATURE_INFO
+
 
 @app.get("/echo-sample")
-def echo_sample():
-    if not os.path.exists(SAMPLE_PATH):
+def echo_sample(index: int = Query(0, ge=0)):
+    if SAMPLES is None or len(SAMPLES) == 0:
         raise HTTPException(404, "sample_inputs.csv not found")
-    df = pd.read_csv(SAMPLE_PATH)
-    row = df.iloc[0]
-    features = {f: (None if pd.isna(row.get(f)) else float(row.get(f))) for f in FEATURES}
-    payload = {"features": features}
-    if "true_label" in df.columns and not pd.isna(row["true_label"]):
-        payload["true_label"] = str(row["true_label"])
-    return JSONResponse(content=jsonable_encoder(payload))
+    i = index % len(SAMPLES)
+    row = SAMPLES.iloc[i]
+    payload = {"features": {f: (None if pd.isna(row.get(f)) else float(row.get(f))) for f in FEATURES},
+               "index": i, "n_samples": int(len(SAMPLES))}
+    for key in ("true_label", "mission"):
+        if key in SAMPLES.columns and not pd.isna(row[key]):
+            payload[key] = str(row[key])
+    return payload
+
 
 @app.post("/predict")
 def predict(payload: PredictPayload):
-    x = to_vector(payload.features)
-    try:
-        proba_vec = model.predict_proba(pd.DataFrame(x, columns=FEATURES))[0]
-    except Exception as e:
-        raise HTTPException(400, str(e))
+    features = clean_features(payload.features)
+    X = predictor.frame([features])
+    prob = predictor.predict_proba(X)[0]
+    prob_uncal = predictor.predict_proba(X, calibrated=False)[0]
 
-    # Top class + confidence stats
-    order = np.argsort(-proba_vec)
+    order = np.argsort(-prob)
     top_idx, second_idx = int(order[0]), int(order[1])
-    top_lab, second_lab = LABELS[top_idx], LABELS[second_idx]
-    top_p, second_p = float(proba_vec[top_idx]), float(proba_vec[second_idx])
-    margin = float(top_p - second_p)
+    top_p, second_p = float(prob[top_idx]), float(prob[second_idx])
+    threshold = DEFAULT_THRESHOLD if payload.threshold is None else float(payload.threshold)
+    accepted = top_p >= threshold
 
-    # Use recommended threshold from training (fallback 0.5)
-    th = float(METRICS.get("recommended_threshold", 0.5))
-    accepted = bool(top_p >= th and margin >= 0.05)  # margin rule is cheap & effective
-
-    # SHAP per-sample (best-effort)
-    top_contrib = []
-    try:
-        if explainer is not None:
-            sv = explainer.shap_values(pd.DataFrame(x, columns=FEATURES))
-            contrib = sv[top_idx][0] if isinstance(sv, list) else sv[0]
-            pairs = sorted(zip(FEATURES, contrib), key=lambda t: abs(t[1]), reverse=True)[:5]
-            top_contrib = [{"feature": f, "shap": float(v), "value": payload.features.get(f, None)} for f,v in pairs]
-    except Exception:
-        fi = METRICS.get("feature_importances_gain", {})
-        pairs = sorted([(f, float(fi.get(f, 0.0)), payload.features.get(f, None)) for f in FEATURES], key=lambda t: t[1], reverse=True)[:5]
-        top_contrib = [{"feature": f, "importance": imp, "value": val} for f,imp,val in pairs]
+    # TreeSHAP contributions to the predicted class's calibrated logit
+    contrib, base = predictor.contributions(X)
+    shap_row = contrib[0, top_idx]
+    contributions = sorted(
+        ({"feature": f, "value": json_value(features[f]), "shap": float(s)} for f, s in zip(FEATURES, shap_row)),
+        key=lambda c: abs(c["shap"]), reverse=True)
 
     out = {
-        "label": top_lab,
-        "probs": {LABELS[i]: float(proba_vec[i]) for i in range(len(LABELS))},
+        "label": LABELS[top_idx],
+        "probs": {LABELS[i]: float(prob[i]) for i in range(len(LABELS))},
+        "probs_uncalibrated": {LABELS[i]: float(prob_uncal[i]) for i in range(len(LABELS))},
         "decision": {
-            "accepted": accepted,
-            "reason": "above_threshold_and_margin" if accepted else "low_confidence",
-            "threshold": th,
+            "accepted": bool(accepted),
+            "reason": "confidence_at_or_above_threshold" if accepted else "below_threshold",
+            "threshold": threshold,
+            "threshold_source": "default" if payload.threshold is None else "request",
             "confidence": top_p,
-            "margin": margin,
-            "second_best": {"label": second_lab, "prob": second_p}
+            "margin": top_p - second_p,
+            "second_best": {"label": LABELS[second_idx], "prob": second_p},
         },
-        "top_factors": top_contrib
+        "attribution": {
+            "method": "TreeSHAP (LightGBM pred_contrib)",
+            "explains": "calibrated logit of the predicted class",
+            "class": LABELS[top_idx],
+            "base_value": float(base[0, top_idx]),
+            "logit": float(base[0, top_idx] + shap_row.sum()),
+            "contributions": contributions,
+        },
+        "top_factors": contributions[:5],
     }
-
-    # (Optional) lightweight inference log for your demo
-    try:
-        log_row = {
-            **{f: payload.features.get(f, None) for f in FEATURES},
-            "pred_label": top_lab, "top_p": top_p, "margin": margin, "accepted": accepted
-        }
-        log_path = os.path.join(ART_DIR, "infer_log.csv")
-        pd.DataFrame([log_row]).to_csv(log_path, mode="a", index=False, header=not os.path.exists(log_path))
-    except Exception:
-        pass
-
+    if INFER_LOG:
+        append_log(features, out)
     return out
 
 
 @app.post("/batch_predict")
 def batch_predict(rows: List[Dict[str, Any]]):
-    if not isinstance(rows, list) or len(rows) == 0:
-        raise HTTPException(400, "Provide a non-empty JSON array of {features:{...}} or raw feature dicts.")
+    if len(rows) == 0:
+        raise HTTPException(422, "Provide a non-empty JSON array of {features:{...}} or raw feature dicts.")
     # accept either [{features:{...}}, {...}] formats; normalize
-    cleaned = []
-    for r in rows:
-        feats = r.get("features", r)
-        arr = []
-        for f in FEATURES:
-            v = feats.get(f, None)
-            arr.append(np.nan if v is None or v == "" else float(v))
-        cleaned.append(arr)
-    X = pd.DataFrame(np.array(cleaned), columns=FEATURES)
-    probs = model.predict_proba(X)
-    preds = probs.argmax(axis=1)
+    cleaned = [clean_features(r.get("features", r)) for r in rows]
+    prob = predictor.predict_proba(predictor.frame(cleaned))
     out = []
-    for i in range(len(rows)):
+    for p in prob:
+        k = int(p.argmax())
         out.append({
-            "label": LABELS[int(preds[i])],
-            "probs": {LABELS[j]: float(probs[i,j]) for j in range(len(LABELS))}
+            "label": LABELS[k],
+            "probs": {LABELS[j]: float(p[j]) for j in range(len(LABELS))},
+            "confidence": float(p[k]),
+            "accepted": bool(p[k] >= DEFAULT_THRESHOLD),
         })
     return out
-
-@app.get("/health")
-def health():
-    return {"ok": True, "version": "0.2.0"}
-
-@app.get("/feature_info")
-def feature_info():
-    return FEATURE_INFO
