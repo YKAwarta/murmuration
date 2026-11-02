@@ -30,11 +30,9 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # ---- Artifacts ----
-artifacts/model.pkl
-artifacts/metrics.json
-artifacts/feature_list.json
-artifacts/sample_inputs.csv
-artifacts/data/
+# The trained model, metrics and samples in artifacts/ are committed so the API runs
+# straight after cloning; the optional inference log is not.
+artifacts/infer_log.csv
 artifacts/__pycache__/
 
 # ---- OS / Editor ----
@@ -55,4 +53,4 @@ Thumbs.db
 .coverage
 htmlcov/
 .tox/
-pytest_cache/
+.pytest_cache/

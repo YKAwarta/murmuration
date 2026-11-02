@@ -1,11 +1,11 @@
-pandas
-numpy
-scikit-learn
-lightgbm
-fastapi
-uvicorn[standard]
-pydantic
-joblib
-matplotlib
-shap
-requests
+# Runtime (API) and training. Versions are the ones the project was tested with (Python 3.12).
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.2
+lightgbm==4.7.0
+numpy==2.5.4
+pandas==3.1.0
+scikit-learn==1.9.1
+scipy==1.18.1
+matplotlib==3.11.2
+requests==2.34.2
