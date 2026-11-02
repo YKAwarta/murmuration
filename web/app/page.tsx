@@ -23,6 +23,7 @@ export default function Home() {
   const [features, setFeatures] = useState<Record<string, string | number>>({});
   const [result, setResult] = useState<PredictResponse | null>(null);
   const [threshold, setThreshold] = useState<number>(0.5);
+  const [sampleIndex, setSampleIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadingMetrics, setLoadingMetrics] = useState(false);
 
@@ -71,11 +72,16 @@ export default function Home() {
 
   const handleUseSample = async () => {
     try {
-      const sample = await getEchoSample();
+      // cycles through held-out test rows (one per mission and class)
+      const sample = await getEchoSample(sampleIndex);
+      setSampleIndex(sample.index + 1);
       const next: Record<string, string | number> = {};
       metadata?.features.forEach((f) => (next[f] = sample.features[f] ?? ""));
       setFeatures(next);
-      toast({ message: "Sample data loaded", type: "success" });
+      toast({
+        message: `Sample ${sample.index + 1}/${sample.n_samples} loaded${sample.mission ? ` (${sample.mission})` : ""}`,
+        type: "success",
+      });
       if (sample.true_label) {
         toast({ message: `True label: ${sample.true_label}`, type: "info" });
       }
@@ -117,18 +123,18 @@ export default function Home() {
 
       {/* Hero */}
       <section className="mb-8 flex flex-col items-center text-center">
-        <img
+        <Image
           src="/murmuration_logo.png"
           alt="Murmuration"
           width={84}
           height={84}
           className="mb-2"
-          loading="eager"
+          priority
         />
         <h1 className="text-3xl font-bold">Murmuration</h1>
         <p className="text-slate-400">Exoplanet Classifier</p>
         <p className="mt-2 text-sm text-slate-400">
-          Birds Beyond the Horizon • AI-powered classification using NASA Kepler/TESS data
+          Birds Beyond the Horizon • Calibrated LightGBM classification of NASA Kepler/TESS objects of interest
         </p>
       </section>
 
@@ -157,6 +163,10 @@ export default function Home() {
             <ResultPanel
               result={result}
               threshold={threshold}
+              defaultThreshold={metadata?.metrics.recommended_threshold ?? 0.5}
+              targetPrecision={metadata?.metrics.target_precision}
+              defaultStats={metricsFull?.decision.test}
+              thresholdCurve={metricsFull?.decision.threshold_curve_test}
               onThresholdChange={setThreshold}
             />
           </div>

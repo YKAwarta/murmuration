@@ -8,7 +8,7 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 export const metadata: Metadata = {
   title: "Murmuration - Exoplanet Classifier",
   description:
-    "Birds Beyond the Horizon - AI-powered exoplanet classification using NASA Kepler/TESS data",
+    "Birds Beyond the Horizon - calibrated exoplanet candidate classification from NASA Kepler/TESS data",
   icons: {
     icon: "/favicon.ico",
     apple: "/favicon.ico",
