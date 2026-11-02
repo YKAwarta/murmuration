@@ -1,0 +1,16 @@
+{
+  "source": "https://exoplanetarchive.ipac.caltech.edu/TAP/sync",
+  "retrieved_utc": "2026-11-02T16:05:57Z",
+  "tables": {
+    "cumulative": {
+      "file": "koi_min.csv",
+      "rows": 9564,
+      "query": "SELECT\n  koi_disposition AS label,\n  koi_period      AS period,\n  koi_duration    AS duration,\n  koi_depth       AS depth,\n  koi_impact      AS impact,\n  koi_prad        AS prad,\n  koi_insol       AS insol,\n  koi_teq         AS teq,\n  koi_steff       AS steff,\n  koi_slogg       AS slogg,\n  koi_srad        AS srad,\n  koi_smass       AS smass,\n  koi_smet        AS smet,\n  koi_kepmag      AS star_mag,\n  koi_model_snr   AS snr,\n  koi_num_transits AS ntrans\nFROM cumulative"
+    },
+    "toi": {
+      "file": "toi_min.csv",
+      "rows": 8151,
+      "query": "SELECT\n  tfopwg_disp       AS raw_label,\n  pl_orbper         AS period,\n  pl_trandurh       AS duration,\n  pl_trandep        AS depth,\n  NULL              AS impact,\n  pl_rade           AS prad,\n  pl_insol          AS insol,\n  pl_eqt            AS teq,\n  st_teff           AS steff,\n  st_logg           AS slogg,\n  st_rad            AS srad,\n  NULL              AS smass,\n  NULL              AS smet,\n  st_tmag           AS star_mag,\n  NULL              AS snr,\n  NULL              AS ntrans\nFROM toi"
+    }
+  }
+}
